@@ -11,30 +11,23 @@ import {
     BellRing, UserPlus
 } from 'lucide-react';
 
-// === KONFIGURASI DEPLOYMENT (DIPERBAIKI UNTUK KOMPATIBILITAS) ===
-// Kita menggunakan pengecekan manual untuk menghindari error pada lingkungan es2015
-let API_URL = 'http://localhost:5000/api';
-let SOCKET_URL = 'http://localhost:5000';
+// === KONFIGURASI DEPLOYMENT (ROBUST VERSION) ===
+// Logika ini mendeteksi apakah aplikasi berjalan di Vite (Vercel) atau lingkungan lain
+const getEnvVariable = (key, defaultValue) => {
+    try {
+        // Coba ambil dari import.meta.env (Standard Vite/Vercel)
+        // Kita gunakan pengecekan bertahap untuk menghindari error kompilasi
+        if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+            return import.meta.env[key];
+        }
+    } catch (e) {}
+    
+    // Fallback jika tidak ditemukan
+    return defaultValue;
+};
 
-// Mencoba mengambil dari environment variables jika tersedia
-try {
-    // @ts-ignore
-    if (typeof process !== 'undefined' && process.env) {
-        // @ts-ignore
-        if (process.env.VITE_API_URL) API_URL = process.env.VITE_API_URL;
-        // @ts-ignore
-        if (process.env.VITE_SOCKET_URL) SOCKET_URL = process.env.VITE_SOCKET_URL;
-    }
-} catch (e) {}
-
-// Fallback untuk Vite Production build
-try {
-    // Menggunakan string literal untuk menghindari parsing error di lingkungan non-vite
-    // @ts-ignore
-    const env = (window as any).importMetaEnv || {}; 
-    if (env.VITE_API_URL) API_URL = env.VITE_API_URL;
-    if (env.VITE_SOCKET_URL) SOCKET_URL = env.VITE_SOCKET_URL;
-} catch (e) {}
+const API_URL = getEnvVariable('VITE_API_URL', 'http://localhost:5000/api');
+const SOCKET_URL = getEnvVariable('VITE_SOCKET_URL', 'http://localhost:5000');
 
 const api = axios.create({ baseURL: API_URL });
 api.interceptors.request.use((config) => {
@@ -43,6 +36,7 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
+// --- HELPER FUNCTIONS ---
 const encryptMessage = (text) => {
     try { return btoa(encodeURIComponent(String(text))); } 
     catch (e) { return String(text); }
@@ -100,6 +94,8 @@ const parseMessageContent = (rawMessage) => {
 };
 
 const EMOJIS = ['😀','😂','🤣','😍','🙏','😘','🥰','😊','😎','😢','😭','😡','😠','👍','👎','❤️','🔥','🎉','✨','💯', '🤝', '🙌', '🤔', '👀'];
+
+// --- COMPONENTS ---
 
 const LoginRegister = ({ setIsAuth }) => {
     const [isLogin, setIsLogin] = useState(true);
@@ -231,7 +227,11 @@ const ChatApp = ({ setIsAuth }) => {
 
     useEffect(() => {
         const token = localStorage.getItem('token');
-        const newSocket = io(SOCKET_URL, { auth: { token }, reconnectionAttempts: 5 });
+        const newSocket = io(SOCKET_URL, { 
+            auth: { token }, 
+            reconnectionAttempts: 5,
+            transports: ['websocket'] // Penting untuk koneksi di Hugging Face
+        });
         setSocket(newSocket);
 
         newSocket.on('connect', () => setIsConnected(true));
