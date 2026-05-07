@@ -11,23 +11,23 @@ import {
     BellRing, UserPlus
 } from 'lucide-react';
 
-// === KONFIGURASI DEPLOYMENT (ROBUST VERSION) ===
-// Logika ini mendeteksi apakah aplikasi berjalan di Vite (Vercel) atau lingkungan lain
-const getEnvVariable = (key, defaultValue) => {
-    try {
-        // Coba ambil dari import.meta.env (Standard Vite/Vercel)
-        // Kita gunakan pengecekan bertahap untuk menghindari error kompilasi
-        if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
-            return import.meta.env[key];
-        }
-    } catch (e) {}
-    
-    // Fallback jika tidak ditemukan
-    return defaultValue;
-};
+// === KONFIGURASI DEPLOYMENT (VERCEL & VITE FIX) ===
+// Vite (compiler yang dipakai Vercel) SANGAT KETAT. 
+// Vite mewajibkan variabel ditulis langsung (eksplisit) agar bisa dibuild.
 
-const API_URL = getEnvVariable('VITE_API_URL', 'http://localhost:5000/api');
-const SOCKET_URL = getEnvVariable('VITE_SOCKET_URL', 'http://localhost:5000');
+let API_URL = 'http://localhost:5000/api';
+let SOCKET_URL = 'http://localhost:5000';
+
+try {
+    // Kita gunakan typeof agar tidak error di environment non-Vite
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+        // Wajib ditulis eksplisit satu per satu seperti ini untuk Vercel
+        API_URL = import.meta.env.VITE_API_URL || API_URL;
+        SOCKET_URL = import.meta.env.VITE_SOCKET_URL || SOCKET_URL;
+    }
+} catch (error) {
+    console.warn("Menggunakan URL fallback lokal");
+}
 
 const api = axios.create({ baseURL: API_URL });
 api.interceptors.request.use((config) => {
