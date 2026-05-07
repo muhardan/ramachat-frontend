@@ -12,16 +12,11 @@ import {
 } from 'lucide-react';
 
 // === KONFIGURASI DEPLOYMENT (VERCEL & VITE FIX) ===
-// Vite (compiler yang dipakai Vercel) SANGAT KETAT. 
-// Vite mewajibkan variabel ditulis langsung (eksplisit) agar bisa dibuild.
-
 let API_URL = 'http://localhost:5000/api';
 let SOCKET_URL = 'http://localhost:5000';
 
 try {
-    // Kita gunakan typeof agar tidak error di environment non-Vite
     if (typeof import.meta !== 'undefined' && import.meta.env) {
-        // Wajib ditulis eksplisit satu per satu seperti ini untuk Vercel
         API_URL = import.meta.env.VITE_API_URL || API_URL;
         SOCKET_URL = import.meta.env.VITE_SOCKET_URL || SOCKET_URL;
     }
@@ -128,7 +123,7 @@ const LoginRegister = ({ setIsAuth }) => {
     };
 
     return (
-        <div className="min-h-screen w-full bg-[#111b21] flex flex-col relative selection:bg-[#00a884] selection:text-white font-sans overflow-hidden">
+        <div className="flex flex-col relative selection:bg-[#00a884] selection:text-white font-sans overflow-hidden w-full bg-[#111b21]" style={{ height: '100dvh' }}>
             <div className="absolute top-0 left-0 w-full h-[222px] bg-[#00a884] z-0 transition-all duration-500"></div>
             <div className="relative z-10 flex flex-col items-center flex-1 justify-center p-4">
                 <div className="w-full max-w-[1000px] flex items-center justify-start mb-8 gap-3 text-white px-4">
@@ -199,9 +194,10 @@ const ChatApp = ({ setIsAuth }) => {
     const [sidebarSearch, setSidebarSearch] = useState('');
 
     const [callState, setCallState] = useState({
-        status: 'idle', type: 'audio', partner: null, duration: 0, isMuted: false, isVideoOff: false
+        status: 'idle', type: 'audio', partner: null, duration: 0, isMuted: false, isVideoOff: false, offer: null
     });
     const [localStream, setLocalStream] = useState(null);
+    const [remoteStream, setRemoteStream] = useState(null);
 
     const messagesEndRef = useRef(null);
     const typingTimeoutRef = useRef(null);
@@ -216,6 +212,7 @@ const ChatApp = ({ setIsAuth }) => {
     const callTimerRef = useRef(null);
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null); 
+    const peerConnectionRef = useRef(null);
     
     let currentUser = { name: 'Pengguna', email: '', id: null };
     try {
@@ -230,7 +227,7 @@ const ChatApp = ({ setIsAuth }) => {
         const newSocket = io(SOCKET_URL, { 
             auth: { token }, 
             reconnectionAttempts: 5,
-            transports: ['websocket'] // Penting untuk koneksi di Hugging Face
+            transports: ['websocket']
         });
         setSocket(newSocket);
 
@@ -245,14 +242,29 @@ const ChatApp = ({ setIsAuth }) => {
             setMessages(prev => prev.filter(m => m.id !== msgId));
         });
 
-        newSocket.on('incoming_call', (data) => {
+        // Penerima Panggilan & Sinyal WebRTC
+        newSocket.on('incoming_call', async (data) => {
+            if (data.type === 'answer') {
+                // Menerima jawaban WebRTC dari lawan bicara
+                if (peerConnectionRef.current && data.answer) {
+                    try { await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer)); } 
+                    catch(err) { console.error("Error setting remote answer", err); }
+                }
+                return;
+            }
+            
+            // Menerima Panggilan Baru
             setCallState(prev => {
-                if (prev.status === 'idle') return { status: 'receiving', type: data.type, partner: data.caller, duration: 0, isMuted: false, isVideoOff: false };
+                if (prev.status === 'idle') return { status: 'receiving', type: data.type, partner: data.caller, duration: 0, isMuted: false, isVideoOff: false, offer: data.offer };
                 return prev;
             });
         });
         
-        newSocket.on('call_accepted', () => { setCallState(prev => ({ ...prev, status: 'connected' })); startCallTimer(); });
+        newSocket.on('call_accepted', () => { 
+            setCallState(prev => ({ ...prev, status: 'connected' })); 
+            startCallTimer(); 
+        });
+        
         newSocket.on('call_rejected', () => { alert("Panggilan ditolak oleh lawan bicara."); endCallLocally(); });
         newSocket.on('call_ended', () => { endCallLocally(); });
 
@@ -322,6 +334,7 @@ const ChatApp = ({ setIsAuth }) => {
             if (emojiMenuRef.current && !emojiMenuRef.current.contains(e.target)) setShowEmojiPicker(false);
             if (sidebarMenuRef.current && !sidebarMenuRef.current.contains(e.target)) setShowSidebarMenu(false);
             if (chatMenuRef.current && !chatMenuRef.current.contains(e.target)) setShowChatMenu(false);
+            // Hapus auto close context menu dari sini agar fungsi onMouseDown bekerja dengan benar.
             if (contextMenu) setContextMenu(null);
         };
         document.addEventListener("mousedown", handleClick);
@@ -348,18 +361,72 @@ const ChatApp = ({ setIsAuth }) => {
         }
     };
 
+    // Fungsi Pembantu untuk mengumpulkan ICE Candidates secara otomatis sebelum mengirim
+    const gatherIce = (pc, callback) => {
+        let resolved = false;
+        const finish = () => {
+            if (!resolved) {
+                resolved = true;
+                callback(pc.localDescription);
+            }
+        };
+        pc.onicegatheringstatechange = () => {
+            if (pc.iceGatheringState === 'complete') finish();
+        };
+        setTimeout(finish, 1500); // Waktu maksimal untuk mengumpulkan ICE
+    };
+
     const initiateCall = async (type) => {
         if (!activeUser) return;
         const stream = await requestMedia(type === 'video');
         if (!stream) return;
-        setCallState({ status: 'calling', type, partner: activeUser, duration: 0, isMuted: false, isVideoOff: false });
-        socket?.emit('call_user', { receiverId: activeUser.id, caller: currentUser, type });
+        
+        setCallState({ status: 'calling', type, partner: activeUser, duration: 0, isMuted: false, isVideoOff: false, offer: null });
+        
+        // Mempersiapkan WebRTC Peer Connection
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        peerConnectionRef.current = pc;
+        stream.getTracks().forEach(t => pc.addTrack(t, stream));
+        
+        pc.ontrack = (event) => { setRemoteStream(event.streams[0]); };
+
+        try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            
+            // Tunggu ICE lengkap, lalu lempar ke Socket
+            gatherIce(pc, (finalOffer) => {
+                socket?.emit('call_user', { receiverId: activeUser.id, caller: currentUser, type, offer: finalOffer });
+            });
+        } catch (err) { console.error("Error creating WebRTC Offer", err); }
     };
 
     const acceptCall = async () => {
         const stream = await requestMedia(callState.type === 'video');
         if (!stream) { endCallLocally(); return; }
+        
         socket?.emit('accept_call', { callerId: callState.partner?.id });
+        
+        // Mempersiapkan WebRTC Peer Connection (Penerima)
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        peerConnectionRef.current = pc;
+        stream.getTracks().forEach(t => pc.addTrack(t, stream));
+        
+        pc.ontrack = (event) => { setRemoteStream(event.streams[0]); };
+
+        if (callState.offer) {
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription(callState.offer));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                
+                // Teruskan jawaban (Answer) ICE menggunakan event call_user kembali ke pemanggil
+                gatherIce(pc, (finalAnswer) => {
+                    socket?.emit('call_user', { receiverId: callState.partner.id, type: 'answer', answer: finalAnswer });
+                });
+            } catch (err) { console.error("Error creating WebRTC Answer", err); }
+        }
+
         setCallState(prev => ({ ...prev, status: 'connected' }));
         startCallTimer();
     };
@@ -372,8 +439,15 @@ const ChatApp = ({ setIsAuth }) => {
     const endCallLocally = () => {
         clearInterval(callTimerRef.current);
         if (localStream) { localStream.getTracks().forEach(track => track.stop()); setLocalStream(null); }
-        if (callState.status !== 'idle' && callState.partner) socket?.emit('end_call', { partnerId: callState.partner.id });
-        setCallState({ status: 'idle', type: 'audio', partner: null, duration: 0, isMuted: false, isVideoOff: false });
+        setRemoteStream(null);
+        if (peerConnectionRef.current) {
+            peerConnectionRef.current.close();
+            peerConnectionRef.current = null;
+        }
+        if (callState.status !== 'idle' && callState.partner) {
+            socket?.emit('end_call', { partnerId: callState.partner.id });
+        }
+        setCallState({ status: 'idle', type: 'audio', partner: null, duration: 0, isMuted: false, isVideoOff: false, offer: null });
     };
 
     const toggleMute = () => {
@@ -390,10 +464,11 @@ const ChatApp = ({ setIsAuth }) => {
         }
     };
 
+    // Binding Stream ke Video Element
     useEffect(() => {
         if (localStream && localVideoRef.current) localVideoRef.current.srcObject = localStream;
-        if (localStream && remoteVideoRef.current) remoteVideoRef.current.srcObject = localStream;
-    }, [localStream, callState.status]);
+        if (remoteStream && remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+    }, [localStream, remoteStream, callState.status]);
 
 
     const handleContextMenu = (e, msg) => {
@@ -512,7 +587,8 @@ const ChatApp = ({ setIsAuth }) => {
 
 
     return (
-        <div className="flex h-screen w-full bg-[#111b21] text-[#e9edef] overflow-hidden font-sans selection:bg-[#00a884] selection:text-white relative">
+        // Menggunakan 100dvh untuk mengatasi layout yang melompat karena virtual keyboard di mobile
+        <div className="flex w-full bg-[#111b21] text-[#e9edef] overflow-hidden font-sans selection:bg-[#00a884] selection:text-white relative" style={{ height: '100dvh' }}>
             
             {callState.status === 'receiving' && (
                 <div className="fixed top-8 left-1/2 -translate-x-1/2 md:translate-x-0 md:left-auto md:right-10 w-[90%] md:w-80 bg-[#202c33] rounded-2xl shadow-2xl border border-[#2a3942] z-[300] overflow-hidden animate-in slide-in-from-top-10 fade-in duration-500">
@@ -534,7 +610,17 @@ const ChatApp = ({ setIsAuth }) => {
                     {callState.type === 'audio' && <div className="absolute inset-0 z-0 bg-gradient-to-b from-[#0b141a] to-[#202c33] opacity-90"></div>}
                     {callState.type === 'video' && (
                         <div className="absolute inset-0 z-0 bg-black flex items-center justify-center">
-                            <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover"></video>
+                            {/* Menampilkan Video Lawan Bicara (Remote Stream) */}
+                            {remoteStream ? (
+                                <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover"></video>
+                            ) : (
+                                <div className="text-white flex flex-col items-center justify-center gap-4">
+                                    <Loader className="animate-spin w-8 h-8 text-[#00a884]"/>
+                                    <p className="animate-pulse">Menghubungkan Video...</p>
+                                </div>
+                            )}
+                            
+                            {/* Menampilkan Video Sendiri di Pojok Kanan Bawah */}
                             {callState.status === 'connected' && (
                                 <div className="absolute bottom-[110px] right-6 w-28 h-40 md:w-44 md:h-64 bg-black rounded-xl overflow-hidden border border-[#2a3942] shadow-2xl z-20 animate-in slide-in-from-right-4 duration-500">
                                     <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover transform -scale-x-100"></video>
@@ -587,11 +673,44 @@ const ChatApp = ({ setIsAuth }) => {
             )}
 
             {contextMenu && (
-                <div className="absolute z-50 bg-[#202c33] border border-[#2a3942] shadow-2xl rounded-lg py-2 min-w-[160px] text-[14.5px] text-[#d1d7db] animate-in fade-in zoom-in-95 duration-100" style={{ top: contextMenu.y, left: contextMenu.x }}>
-                    <button onClick={() => { setReplyingTo(contextMenu.msg); setContextMenu(null); inputRef.current?.focus(); }} className="w-full text-left px-4 py-2 hover:bg-[#111b21] hover:text-white transition flex justify-between items-center">Balas <Reply size={16}/></button>
-                    <button onClick={() => { navigator.clipboard.writeText(parseMessageContent(contextMenu.msg.message).text); setContextMenu(null); }} className="w-full text-left px-4 py-2 hover:bg-[#111b21] hover:text-white transition flex justify-between items-center">Salin <Copy size={16}/></button>
+                <div 
+                    onMouseDown={(e) => e.stopPropagation()} // Mencegah klik menyebar dan menutup menu
+                    className="absolute z-50 bg-[#202c33] border border-[#2a3942] shadow-2xl rounded-lg py-2 min-w-[160px] text-[14.5px] text-[#d1d7db] animate-in fade-in zoom-in-95 duration-100" 
+                    style={{ 
+                        top: Math.min(contextMenu.y, window.innerHeight - 160), 
+                        left: Math.min(contextMenu.x, window.innerWidth - 180) 
+                    }}
+                >
+                    <button onClick={(e) => { 
+                        e.stopPropagation();
+                        setReplyingTo(contextMenu.msg); 
+                        setContextMenu(null); 
+                        setTimeout(() => inputRef.current?.focus(), 100);
+                    }} className="w-full text-left px-4 py-2 hover:bg-[#111b21] hover:text-white transition flex justify-between items-center">Balas <Reply size={16}/></button>
+                    
+                    <button onClick={(e) => { 
+                        e.stopPropagation();
+                        const textToCopy = parseMessageContent(contextMenu.msg.message).text;
+                        if (textToCopy) {
+                            if (navigator.clipboard && window.isSecureContext) {
+                                navigator.clipboard.writeText(textToCopy);
+                            } else {
+                                const textArea = document.createElement("textarea");
+                                textArea.value = textToCopy;
+                                document.body.appendChild(textArea);
+                                textArea.select();
+                                try { document.execCommand('copy'); } catch (err) {}
+                                textArea.remove();
+                            }
+                        }
+                        setContextMenu(null); 
+                    }} className="w-full text-left px-4 py-2 hover:bg-[#111b21] hover:text-white transition flex justify-between items-center">Salin <Copy size={16}/></button>
+                    
                     <div className="h-[1px] bg-[#2a3942] my-1"></div>
-                    <button onClick={() => handleDeleteMessage(contextMenu.msg.id)} className="w-full text-left px-4 py-2 hover:bg-[#111b21] hover:text-white transition text-red-400 flex justify-between items-center">Hapus Pesan <Trash2 size={16}/></button>
+                    <button onClick={(e) => { 
+                        e.stopPropagation();
+                        handleDeleteMessage(contextMenu.msg.id); 
+                    }} className="w-full text-left px-4 py-2 hover:bg-[#111b21] hover:text-white transition text-red-400 flex justify-between items-center">Hapus Pesan <Trash2 size={16}/></button>
                 </div>
             )}
 
@@ -725,7 +844,7 @@ const ChatApp = ({ setIsAuth }) => {
 
                                                     <div className="flex flex-col min-w-[100px] z-10 relative p-1.5 px-2 py-1">
                                                         {contentData.replyTo && (
-                                                            <div className="bg-black/10 rounded-lg p-2 mb-1.5 border-l-4 border-[#00a884] flex flex-col">
+                                                            <div className="bg-black/10 rounded-lg p-2 mb-1.5 border-l-4 border-[#00a884] flex flex-col cursor-pointer hover:bg-black/20 transition-colors">
                                                                 <span className="text-[#00a884] font-medium text-[13px]">{contentData.replyTo.sender || ''}</span>
                                                                 <span className="text-white/70 text-[13.5px] truncate max-w-[200px]">{String(contentData.replyTo.text || '')}</span>
                                                             </div>
@@ -761,7 +880,7 @@ const ChatApp = ({ setIsAuth }) => {
                                         <div className="flex-1 bg-[#111b21] rounded-lg p-2 border-l-4 border-[#00a884] flex items-center justify-between shadow-inner">
                                             <div className="flex flex-col text-[13.5px]">
                                                 <span className="text-[#00a884] font-medium">{replyingTo.sender_id === currentUser?.id ? 'Anda' : activeUser?.name || 'Kontak'}</span>
-                                                <span className="text-[#8696a0] truncate">{String(parseMessageContent(replyingTo.message).text || 'Media')}</span>
+                                                <span className="text-[#8696a0] truncate max-w-xs">{String(parseMessageContent(replyingTo.message).text || 'Media')}</span>
                                             </div>
                                             <button onClick={() => setReplyingTo(null)} className="p-2 text-[#8696a0] hover:text-white transition-colors"><X size={20}/></button>
                                         </div>
