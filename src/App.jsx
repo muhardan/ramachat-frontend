@@ -11,8 +11,10 @@ import {
     BellRing, UserPlus
 } from 'lucide-react';
 
-const API_URL = 'http://localhost:5000/api';
-const SOCKET_URL = 'http://localhost:5000';
+// === KONFIGURASI DEPLOYMENT ===
+// Vite akan otomatis mengambil nilai dari Environment Variables Vercel
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
 
 const api = axios.create({ baseURL: API_URL });
 api.interceptors.request.use((config) => {
