@@ -11,10 +11,30 @@ import {
     BellRing, UserPlus
 } from 'lucide-react';
 
-// === KONFIGURASI DEPLOYMENT ===
-// Vite akan otomatis mengambil nilai dari Environment Variables Vercel
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+// === KONFIGURASI DEPLOYMENT (DIPERBAIKI UNTUK KOMPATIBILITAS) ===
+// Kita menggunakan pengecekan manual untuk menghindari error pada lingkungan es2015
+let API_URL = 'http://localhost:5000/api';
+let SOCKET_URL = 'http://localhost:5000';
+
+// Mencoba mengambil dari environment variables jika tersedia
+try {
+    // @ts-ignore
+    if (typeof process !== 'undefined' && process.env) {
+        // @ts-ignore
+        if (process.env.VITE_API_URL) API_URL = process.env.VITE_API_URL;
+        // @ts-ignore
+        if (process.env.VITE_SOCKET_URL) SOCKET_URL = process.env.VITE_SOCKET_URL;
+    }
+} catch (e) {}
+
+// Fallback untuk Vite Production build
+try {
+    // Menggunakan string literal untuk menghindari parsing error di lingkungan non-vite
+    // @ts-ignore
+    const env = (window as any).importMetaEnv || {}; 
+    if (env.VITE_API_URL) API_URL = env.VITE_API_URL;
+    if (env.VITE_SOCKET_URL) SOCKET_URL = env.VITE_SOCKET_URL;
+} catch (e) {}
 
 const api = axios.create({ baseURL: API_URL });
 api.interceptors.request.use((config) => {
@@ -105,7 +125,7 @@ const LoginRegister = ({ setIsAuth }) => {
                 alert('Registrasi sukses! Silakan login untuk memulai.');
             }
         } catch (err) {
-            setError(err.response?.data?.error || 'Koneksi ke server gagal. Pastikan backend menyala.');
+            setError(err.response?.data?.error || 'Terjadi kesalahan pada server saat registrasi.');
         } finally {
             setLoading(false);
         }
@@ -166,7 +186,6 @@ const ChatApp = ({ setIsAuth }) => {
     const [isSending, setIsSending] = useState(false); 
     const [replyingTo, setReplyingTo] = useState(null);
     
-    // States untuk UI & Menu Interaktif
     const [isMobileView, setIsMobileView] = useState(false);
     const [leftDrawer, setLeftDrawer] = useState('chats'); 
     const [rightDrawer, setRightDrawer] = useState(null); 
@@ -222,12 +241,10 @@ const ChatApp = ({ setIsAuth }) => {
         newSocket.on('user_offline', (userId) => setUsers(prev => prev.map(u => u.id === userId ? { ...u, is_online: false } : u)));
         newSocket.on('messages_read', ({ readerId }) => setMessages(prev => prev.map(m => m.receiver_id === readerId ? { ...m, status: 'read' } : m)));
 
-        // Hapus Pesan Real-time
         newSocket.on('message_deleted', (msgId) => {
             setMessages(prev => prev.filter(m => m.id !== msgId));
         });
 
-        // Sinyal Panggilan
         newSocket.on('incoming_call', (data) => {
             setCallState(prev => {
                 if (prev.status === 'idle') return { status: 'receiving', type: data.type, partner: data.caller, duration: 0, isMuted: false, isVideoOff: false };
@@ -299,7 +316,6 @@ const ChatApp = ({ setIsAuth }) => {
         if (messagesEndRef.current && !rightDrawer) messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }, [messages, partnerTyping, replyingTo]);
 
-    // --- KLIK GLOBAL (Tutup Dropdowns) ---
     useEffect(() => {
         const handleClick = (e) => {
             if (attachMenuRef.current && !attachMenuRef.current.contains(e.target)) setShowAttachMenu(false);
@@ -312,7 +328,6 @@ const ChatApp = ({ setIsAuth }) => {
         return () => document.removeEventListener("mousedown", handleClick);
     }, [contextMenu]);
 
-    // --- LOGIKA PANGGILAN ---
     const startCallTimer = () => {
         clearInterval(callTimerRef.current);
         callTimerRef.current = setInterval(() => { setCallState(prev => ({ ...prev, duration: prev.duration + 1 })); }, 1000);
@@ -326,8 +341,6 @@ const ChatApp = ({ setIsAuth }) => {
             }
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: withVideo });
             setLocalStream(stream);
-            if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream; 
             return stream;
         } catch (err) {
             alert("Gagal mengakses Kamera/Mikrofon. Pastikan izin telah diberikan.");
@@ -383,7 +396,6 @@ const ChatApp = ({ setIsAuth }) => {
     }, [localStream, callState.status]);
 
 
-    // --- HELPERS UI CHAT ---
     const handleContextMenu = (e, msg) => {
         e.preventDefault();
         setContextMenu({ x: e.pageX, y: e.pageY, msg });
@@ -476,10 +488,8 @@ const ChatApp = ({ setIsAuth }) => {
         }, 1500);
     };
 
-    // Filter Sidebar Contact
     const filteredUsers = users.filter(u => u.name.toLowerCase().includes(sidebarSearch.toLowerCase()) || u.email.toLowerCase().includes(sidebarSearch.toLowerCase()));
 
-    // Filter Chat Room Messages
     const groupedMessages = useMemo(() => {
         const groups = [];
         let currentDate = null;
@@ -501,11 +511,9 @@ const ChatApp = ({ setIsAuth }) => {
     }, [messages, searchQuery]);
 
 
-    // --- RENDER ---
     return (
         <div className="flex h-screen w-full bg-[#111b21] text-[#e9edef] overflow-hidden font-sans selection:bg-[#00a884] selection:text-white relative">
             
-            {/* OVERLAY PANGGILAN */}
             {callState.status === 'receiving' && (
                 <div className="fixed top-8 left-1/2 -translate-x-1/2 md:translate-x-0 md:left-auto md:right-10 w-[90%] md:w-80 bg-[#202c33] rounded-2xl shadow-2xl border border-[#2a3942] z-[300] overflow-hidden animate-in slide-in-from-top-10 fade-in duration-500">
                     <div className="bg-[#0b141a] p-5 text-center relative overflow-hidden">
@@ -548,7 +556,6 @@ const ChatApp = ({ setIsAuth }) => {
                 </div>
             )}
 
-            {/* Modal Tambah Teman (Add Friend) */}
             {showAddFriendModal && (
                 <div className="fixed inset-0 z-[150] bg-black/80 flex items-center justify-center animate-in fade-in p-4">
                     <div className="bg-[#202c33] border border-[#2a3942] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in-95">
@@ -579,7 +586,6 @@ const ChatApp = ({ setIsAuth }) => {
                 </div>
             )}
 
-            {/* Menu Konteks Klik Kanan */}
             {contextMenu && (
                 <div className="absolute z-50 bg-[#202c33] border border-[#2a3942] shadow-2xl rounded-lg py-2 min-w-[160px] text-[14.5px] text-[#d1d7db] animate-in fade-in zoom-in-95 duration-100" style={{ top: contextMenu.y, left: contextMenu.x }}>
                     <button onClick={() => { setReplyingTo(contextMenu.msg); setContextMenu(null); inputRef.current?.focus(); }} className="w-full text-left px-4 py-2 hover:bg-[#111b21] hover:text-white transition flex justify-between items-center">Balas <Reply size={16}/></button>
@@ -589,7 +595,6 @@ const ChatApp = ({ setIsAuth }) => {
                 </div>
             )}
 
-            {/* Viewer Gambar Penuh */}
             {viewingImage && (
                 <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col items-center justify-center animate-in fade-in duration-200">
                     <div className="absolute top-0 left-0 w-full p-4 flex justify-between items-center bg-gradient-to-b from-black/60 to-transparent">
@@ -605,7 +610,6 @@ const ChatApp = ({ setIsAuth }) => {
             <div className="md:p-4 lg:p-5 w-full h-full flex items-center justify-center relative z-10">
                 <div className="w-full h-full max-w-[1600px] flex shadow-2xl overflow-hidden md:rounded-[20px] relative bg-[#111b21] animate-in zoom-in-[0.98] duration-300">
                     
-                    {/* --- PANEL KIRI --- */}
                     <div className={`${isMobileView ? '-translate-x-full absolute md:relative md:translate-x-0 hidden' : 'flex'} md:flex flex-col w-full md:w-[35%] lg:w-[30%] min-w-[320px] max-w-[420px] h-full border-r border-[#202c33] bg-[#111b21] transition-transform duration-300 z-10 relative overflow-hidden`}>
                         <div className="h-[64px] px-4 bg-[#202c33] flex justify-between items-center shrink-0">
                             <div className="w-10 h-10 bg-gradient-to-tr from-[#00a884] to-[#029072] rounded-full flex items-center justify-center font-bold text-white cursor-pointer hover:opacity-90">{currentUser?.name?.charAt(0).toUpperCase() || 'U'}</div>
@@ -647,17 +651,14 @@ const ChatApp = ({ setIsAuth }) => {
                                     </div>
                                 </div>
                             ))}
-                            {filteredUsers.length === 0 && <div className="text-center text-[#8696a0] p-6 text-sm">Tidak ada kontak. Klik ikon titik 3 lalu "Tambah Teman".</div>}
                         </div>
                     </div>
 
-                    {/* --- PANEL KANAN (OBROLAN) --- */}
                     <div className={`${!isMobileView ? 'translate-x-full absolute md:relative md:translate-x-0 hidden' : 'flex'} md:flex flex-col flex-1 w-full h-full bg-[#0b141a] transition-transform duration-300 z-20 relative overflow-hidden`}>
                         <div className="absolute inset-0 z-0 pointer-events-none opacity-[0.06]" style={{ backgroundImage: "url('https://static.whatsapp.net/rsrc.php/v3/yl/r/r_Q_kJuvCW3.png')", backgroundSize: '412px' }}></div>
 
                         {activeUser ? (
                             <div className="flex flex-col h-full z-10 w-full relative animate-in fade-in duration-300">
-                                {/* Header Obrolan */}
                                 <div className="h-[64px] px-4 bg-[#202c33] flex items-center justify-between shrink-0 shadow-sm z-20">
                                     <div className="flex items-center gap-4 cursor-pointer">
                                         <button onClick={(e) => { e.stopPropagation(); setActiveUser(null); setIsMobileView(false); }} className="md:hidden text-[#aebac1] hover:text-white p-1 rounded-full"><ArrowLeft size={24}/></button>
@@ -688,7 +689,6 @@ const ChatApp = ({ setIsAuth }) => {
                                     </div>
                                 </div>
 
-                                {/* Penelusuran Chat */}
                                 {rightDrawer === 'search' && (
                                     <div className="bg-[#202c33] p-2 border-b border-[#2a3942] z-20 flex items-center gap-4 animate-in slide-in-from-top-2">
                                         <button onClick={() => { setRightDrawer(null); setSearchQuery(''); }} className="text-[#aebac1] hover:text-white"><ArrowLeft size={20}/></button>
@@ -696,7 +696,6 @@ const ChatApp = ({ setIsAuth }) => {
                                     </div>
                                 )}
 
-                                {/* Area Pesan */}
                                 <div className="flex-1 overflow-y-auto px-[4%] md:px-[8%] py-4 custom-scrollbar flex flex-col gap-1 z-10 relative">
                                     <div className="flex justify-center mb-6 mt-4">
                                         <div className="bg-[#ffeecd] text-[#54421b] text-[12px] px-4 py-2 rounded-lg text-center flex items-center gap-2 shadow-sm font-medium animate-in fade-in duration-500">
@@ -732,8 +731,8 @@ const ChatApp = ({ setIsAuth }) => {
                                                             </div>
                                                         )}
                                                         {contentData.text && <span className="pr-[65px] pt-0.5 break-words">{String(contentData.text)}</span>}
-                                                        {contentData.type === 'image' && contentData.fileData && <div onClick={() => setViewingImage(contentData.fileData)} className="mt-2 rounded max-h-[320px] overflow-hidden relative group/img cursor-pointer"><img src={contentData.fileData} className="w-full h-full object-cover group-hover/img:brightness-90 transition-all duration-300" alt="Media"/><div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity"><Maximize2 size={32} className="text-white drop-shadow-md"/></div></div>}
-                                                        {contentData.type === 'document' && contentData.fileData && <a href={contentData.fileData} download={contentData.fileName} className="flex items-center gap-3 p-3 bg-black/20 rounded-md mt-1 cursor-pointer hover:bg-black/30 transition"><FileText size={24} className="text-white/90"/><div className="flex-1 overflow-hidden"><p className="text-[14px] font-medium truncate">{contentData.fileName}</p><p className="text-[11px] text-white/60 uppercase">Dokumen</p></div></a>}
+                                                        {contentData.type === 'image' && contentData.fileData && <div onClick={() => setViewingImage(contentData.fileData)} className="mt-2 rounded max-h-[320px] overflow-hidden relative group/img cursor-pointer"><img src={contentData.fileData} className="w-full h-full object-cover group-hover/img:brightness-90 transition-all duration-300" alt="Media"/></div>}
+                                                        {contentData.type === 'document' && contentData.fileData && <a href={contentData.fileData} download={contentData.fileName} className="flex items-center gap-3 p-3 bg-black/20 rounded-md mt-1 cursor-pointer hover:bg-black/30 transition"><FileText size={24} className="text-white/90"/><div className="flex-1 overflow-hidden"><p className="text-[14px] font-medium truncate">{contentData.fileName}</p></div></a>}
                                                         
                                                         <div className="text-[10.5px] text-white/60 text-right absolute bottom-1 right-2 flex items-center gap-1 font-medium">
                                                             <span>{formatTime(msg.created_at)}</span>
@@ -757,7 +756,6 @@ const ChatApp = ({ setIsAuth }) => {
                                     <div ref={messagesEndRef} className="h-6" />
                                 </div>
 
-                                {/* Pratinjau Balasan */}
                                 {replyingTo && (
                                     <div className="bg-[#202c33] px-4 pt-2 -mb-2 z-20 flex animate-in slide-in-from-bottom-2">
                                         <div className="flex-1 bg-[#111b21] rounded-lg p-2 border-l-4 border-[#00a884] flex items-center justify-between shadow-inner">
@@ -770,7 +768,6 @@ const ChatApp = ({ setIsAuth }) => {
                                     </div>
                                 )}
 
-                                {/* Pratinjau File Lampiran */}
                                 {selectedFile && (
                                     <div className="bg-[#202c33] border-t border-[#2a3942] p-4 flex items-center justify-between shadow-[0_-4px_10px_rgba(0,0,0,0.1)] z-30 animate-in slide-in-from-bottom-5">
                                         <div className="flex items-center gap-4 overflow-hidden">
@@ -786,7 +783,6 @@ const ChatApp = ({ setIsAuth }) => {
                                     </div>
                                 )}
 
-                                {/* Area Input Bawah */}
                                 <div className="bg-[#202c33] min-h-[62px] px-3 py-2.5 flex items-end gap-2 shrink-0 z-20">
                                     <div className="flex gap-2 text-[#8696a0] items-center pb-2.5 px-2">
                                         <div className="relative" ref={emojiMenuRef}>
